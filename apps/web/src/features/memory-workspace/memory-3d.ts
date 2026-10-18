@@ -13,19 +13,34 @@ const unit = (seed: string) => {
   return ((hash ^ (hash >>> 16)) >>> 0) / 4294967295;
 };
 
-/** Independent XYZ force layout. No coordinates are inherited from the 2D map. */
-export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+export const MEMORY_3D_LAYOUT_STEPS = 180;
+export type MemoryNetwork3DSimulation = {
+  readonly progress: number;
+  readonly done: boolean;
+  advance: (iterations?: number) => void;
+  snapshot: () => Map<string, MemoryPoint3D>;
+};
+
+/** Independent XYZ force relaxation, with resumable iterations for the layout worker. */
+export function createMemoryNetwork3DSimulation(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): MemoryNetwork3DSimulation {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
   const root = ordered.findIndex(node => node.type === "SOURCE" && isMemoryCoreLabel(node.label));
   const count = ordered.length;
-  const points = ordered.map(node => ({
-    x: (unit(`${node.id}:x`) - 0.5) * 260,
-    y: (unit(`${node.id}:y`) - 0.5) * 260,
-    z: (unit(`${node.id}:z`) - 0.5) * 260
-  }));
-  if (root >= 0) points[root] = { x: 0, y: 0, z: 0 };
-  const links = [...edges].sort((a, b) => a.id.localeCompare(b.id)).flatMap(edge => {
+  const px = new Float64Array(count), py = new Float64Array(count), pz = new Float64Array(count);
+  const source = new Uint8Array(count);
+  // Keep initial density bounded as the archive grows. The springs still determine
+  // the final geometry; a larger archive must not start as 50k coincident particles.
+  const spread = Math.max(1, Math.cbrt(count / 2000));
+  ordered.forEach((node, i) => {
+    px[i] = (unit(`${node.id}:x`) - 0.5) * 260 * spread;
+    py[i] = (unit(`${node.id}:y`) - 0.5) * 260 * spread;
+    pz[i] = (unit(`${node.id}:z`) - 0.5) * 260 * spread;
+    source[i] = Number(node.type === "SOURCE");
+  });
+  if (root >= 0) px[root] = py[root] = pz[root] = 0;
+  const sortedEdges = [...edges].sort((a, b) => a.id.localeCompare(b.id));
+  const links = sortedEdges.flatMap(edge => {
     const a = index.get(edge.source), b = index.get(edge.target);
     if (a === undefined || b === undefined || a === b) return [];
     const fileLink = ordered[a]!.type === "SOURCE" && ordered[b]!.type === "SOURCE";
@@ -33,39 +48,76 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
       strength: fileLink ? 0.035 : edge.type === "CONTAINS" ? 0.028 : 0.004 }];
   });
   // Initialize records around their actual file, in a volume rather than a plane.
-  for (const edge of edges) {
+  for (const edge of sortedEdges) {
     const a = index.get(edge.source), b = index.get(edge.target);
     if (edge.type !== "CONTAINS" || a === undefined || b === undefined || ordered[a]!.type !== "SOURCE" || ordered[b]!.type !== "MEMORY") continue;
-    const parent = points[a]!, id = ordered[b]!.id;
-    points[b] = { x: parent.x + (unit(`${id}:dx`) - 0.5) * 70,
-      y: parent.y + (unit(`${id}:dy`) - 0.5) * 70, z: parent.z + (unit(`${id}:dz`) - 0.5) * 70 };
+    const id = ordered[b]!.id;
+    px[b] = px[a]! + (unit(`${id}:dx`) - 0.5) * 70 * spread;
+    py[b] = py[a]! + (unit(`${id}:dy`) - 0.5) * 70 * spread;
+    pz[b] = pz[a]! + (unit(`${id}:dz`) - 0.5) * 70 * spread;
   }
   const fx = new Float64Array(count), fy = new Float64Array(count), fz = new Float64Array(count);
-  // Bounded spatial-grid repulsion and link springs act equally on all three axes.
-  for (let step = 0; step < 180; step++) {
+  // An open-addressed grid avoids millions of temporary coordinate strings and
+  // arrays per iteration. Dense cells use their center of mass for large graphs,
+  // bounding local repulsion work even when thousands of records share one file.
+  let gridSize = 16;
+  while (gridSize < count * 2) gridSize *= 2;
+  const mask = gridSize - 1;
+  const stamps = new Uint32Array(gridSize), head = new Int32Array(gridSize);
+  const cellX = new Int32Array(gridSize), cellY = new Int32Array(gridSize), cellZ = new Int32Array(gridSize);
+  const cellCount = new Int32Array(gridSize), cellSources = new Int32Array(gridSize);
+  const sumX = new Float64Array(gridSize), sumY = new Float64Array(gridSize), sumZ = new Float64Array(gridSize);
+  const next = new Int32Array(count);
+  let step = 0;
+  const slotFor = (x: number, y: number, z: number, stamp: number) => {
+    let slot = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) & mask;
+    while (stamps[slot] === stamp && (cellX[slot] !== x || cellY[slot] !== y || cellZ[slot] !== z)) slot = (slot + 1) & mask;
+    return slot;
+  };
+  const iterate = () => {
     fx.fill(0); fy.fill(0); fz.fill(0);
-    const grid = new Map<string, number[]>();
+    const stamp = step + 1;
     for (let i = 0; i < count; i++) {
-      const p = points[i]!, key = `${Math.floor(p.x / 32)},${Math.floor(p.y / 32)},${Math.floor(p.z / 32)}`;
-      if (!grid.has(key)) grid.set(key, []);
-      grid.get(key)!.push(i);
+      const x = Math.floor(px[i]! / 32), y = Math.floor(py[i]! / 32), z = Math.floor(pz[i]! / 32);
+      const slot = slotFor(x, y, z, stamp);
+      if (stamps[slot] !== stamp) {
+        stamps[slot] = stamp; cellX[slot] = x; cellY[slot] = y; cellZ[slot] = z;
+        head[slot] = -1; cellCount[slot] = 0; cellSources[slot] = 0;
+        sumX[slot] = sumY[slot] = sumZ[slot] = 0;
+      }
+      next[i] = head[slot]!; head[slot] = i;
+      cellCount[slot]!++; cellSources[slot]! += source[i]!;
+      sumX[slot]! += px[i]!; sumY[slot]! += py[i]!; sumZ[slot]! += pz[i]!;
     }
     for (let i = 0; i < count; i++) {
-      const p = points[i]!, gx = Math.floor(p.x / 32), gy = Math.floor(p.y / 32), gz = Math.floor(p.z / 32);
+      const gx = Math.floor(px[i]! / 32), gy = Math.floor(py[i]! / 32), gz = Math.floor(pz[i]! / 32);
       for (let x = gx - 1; x <= gx + 1; x++) for (let y = gy - 1; y <= gy + 1; y++) for (let z = gz - 1; z <= gz + 1; z++) {
-        for (const j of grid.get(`${x},${y},${z}`) ?? []) {
-          if (j <= i) continue;
-          const q = points[j]!, dx = p.x - q.x, dy = p.y - q.y, dz = p.z - q.z;
-          const distanceSquared = Math.max(1, dx * dx + dy * dy + dz * dz);
-          const strength = (ordered[i]!.type === "SOURCE" || ordered[j]!.type === "SOURCE" ? 28 : 12) / distanceSquared;
+        const slot = slotFor(x, y, z, stamp);
+        if (stamps[slot] !== stamp) continue;
+        if (count > 2000 && cellCount[slot]! > 8) {
+          const ownCell = gx === x && gy === y && gz === z;
+          const population = cellCount[slot]! - Number(ownCell);
+          if (!population) continue;
+          const dx = px[i]! - (sumX[slot]! - (ownCell ? px[i]! : 0)) / population;
+          const dy = py[i]! - (sumY[slot]! - (ownCell ? py[i]! : 0)) / population;
+          const dz = pz[i]! - (sumZ[slot]! - (ownCell ? pz[i]! : 0)) / population;
+          const sources = cellSources[slot]! - (ownCell ? source[i]! : 0);
+          const strength = (source[i] ? 28 : 12 + 16 * sources / population) * population / Math.max(1, dx * dx + dy * dy + dz * dz);
           fx[i]! += dx * strength; fy[i]! += dy * strength; fz[i]! += dz * strength;
-          fx[j]! -= dx * strength; fy[j]! -= dy * strength; fz[j]! -= dz * strength;
+          continue;
+        }
+        for (let j = head[slot]!; j !== -1; j = next[j]!) {
+          if (count <= 2000 ? j <= i : j === i) continue;
+          const dx = px[i]! - px[j]!, dy = py[i]! - py[j]!, dz = pz[i]! - pz[j]!;
+          const distanceSquared = Math.max(1, dx * dx + dy * dy + dz * dz);
+          const strength = (source[i] || source[j] ? 28 : 12) / distanceSquared;
+          fx[i]! += dx * strength; fy[i]! += dy * strength; fz[i]! += dz * strength;
+          if (count <= 2000) { fx[j]! -= dx * strength; fy[j]! -= dy * strength; fz[j]! -= dz * strength; }
         }
       }
     }
     for (const link of links) {
-      const a = points[link.a]!, b = points[link.b]!;
-      const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, distance = Math.max(0.01, Math.hypot(dx, dy, dz));
+      const dx = px[link.b]! - px[link.a]!, dy = py[link.b]! - py[link.a]!, dz = pz[link.b]! - pz[link.a]!, distance = Math.max(0.01, Math.hypot(dx, dy, dz));
       const spring = (distance - link.length) * link.strength / distance;
       fx[link.a]! += dx * spring; fy[link.a]! += dy * spring; fz[link.a]! += dz * spring;
       fx[link.b]! -= dx * spring; fy[link.b]! -= dy * spring; fz[link.b]! -= dz * spring;
@@ -73,13 +125,28 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
     const cooling = 1 - step / 230;
     for (let i = 0; i < count; i++) {
       if (i === root) continue;
-      const p = points[i]!;
-      const dx = fx[i]! - p.x * 0.0005, dy = fy[i]! - p.y * 0.0005, dz = fz[i]! - p.z * 0.0005;
+      const dx = fx[i]! - px[i]! * 0.0005, dy = fy[i]! - py[i]! * 0.0005, dz = fz[i]! - pz[i]! * 0.0005;
       const stepScale = Math.min(1, 4 / Math.max(0.01, Math.hypot(dx, dy, dz))) * cooling;
-      p.x += dx * stepScale; p.y += dy * stepScale; p.z += dz * stepScale;
+      px[i]! += dx * stepScale; py[i]! += dy * stepScale; pz[i]! += dz * stepScale;
     }
-  }
-  return new Map(ordered.map((node, i) => [node.id, points[i]!]));
+    step++;
+  };
+  return {
+    get progress() { return count ? step / MEMORY_3D_LAYOUT_STEPS : 1; },
+    get done() { return !count || step >= MEMORY_3D_LAYOUT_STEPS; },
+    advance(iterations = 1) {
+      const end = Math.min(MEMORY_3D_LAYOUT_STEPS, step + Math.max(0, Math.floor(iterations)));
+      while (count && step < end) iterate();
+    },
+    snapshot: () => new Map(ordered.map((node, i) => [node.id, { x: px[i]!, y: py[i]!, z: pz[i]! }]))
+  };
+}
+
+/** Synchronous convenience API for small graphs and pure layout tests. */
+export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): Map<string, MemoryPoint3D> {
+  const simulation = createMemoryNetwork3DSimulation(nodes, edges);
+  simulation.advance(MEMORY_3D_LAYOUT_STEPS);
+  return simulation.snapshot();
 }
 
 export function projectMemoryPoint(point: MemoryPoint3D, camera: MemoryCamera3D, scale: number, width: number, height: number) {
