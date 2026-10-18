@@ -313,7 +313,13 @@ function memoryIssuesRevisionHash(snapshotRevision: string, states: MemoryIssueS
   return digest(JSON.stringify({ snapshotRevision, stateRevisions }));
 }
 
-// Retain taxonomy within the requested bounded budget (the legacy default stays 2,000).
+/**
+ * Retain source/topic taxonomy and visible topic neighbors within the requested node budget.
+ * @param nodes Filtered nodes in the order used to fill remaining slots.
+ * @param edges Matching edges used to rank topic membership.
+ * @param limit Positive node budget; the route validates 1..50,000 and defaults to 2,000.
+ * @returns At most `limit` nodes; reuses the input array when it already fits.
+ */
 export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], limit = 2000): MemoryGraphNode[] {
   if (nodes.length <= limit) return nodes;
   const members = new Map<string, Set<string>>();

@@ -5,8 +5,10 @@ import type { MemoryNetworkLayoutMessage, MemoryNetworkLayoutRequest, MemoryNetw
 import { memoryReplyTransferables, packMemoryAtlas, packMemoryDepth } from "./memory-network-replies.js";
 
 let request = 0;
+/** Let queued graph requests invalidate the current generation between force slices. */
 const yieldToWorker = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 
+/** Prepare atlas metadata and stream force snapshots; a newer generation cancels the old run. */
 async function runLayout(data: MemoryNetworkLayoutRequest, current: number) {
   const { mode, prepareAtlas } = data;
   // Taxonomy/color/date preparation belongs off the UI thread too. Only 3D opts
@@ -15,11 +17,13 @@ async function runLayout(data: MemoryNetworkLayoutRequest, current: number) {
   const nodes = atlas?.nodes ?? data.nodes, edges = atlas?.edges ?? data.edges;
   const simulation = createMemoryNetwork3DSimulation(nodes, edges);
   const packed = mode === "3D" && Boolean(atlas) && nodes.length > 2000;
+  /** Transfer owned packed buffers, retaining structured-clone support for legacy replies. */
   const post = (message: MemoryNetworkLayoutMessage) => {
     const transfer = memoryReplyTransferables(message);
     if (transfer.length) self.postMessage(message, { transfer });
     else self.postMessage(message);
   };
+  /** Publish an independent depth frame in raw topology order or the legacy keyed form. */
   const depthMessage = () => packed ? { packedDepth: packMemoryDepth(data.nodes, simulation.snapshot()) } : { depth: [...simulation.snapshot()] };
   post({ ...(atlas ? mode === "3D" ? { atlas: { ...atlas, nodes: [], edges: [], ...(packed ? { positions: new Map() } : {}) }, rawGraph: true,
     ...(packed ? { packedAtlas: packMemoryAtlas(data.nodes, atlas.positions) } : {}) } : { atlas } : {}), ...depthMessage(), done: false, progress: 0 });
@@ -56,6 +60,7 @@ async function runLayout(data: MemoryNetworkLayoutRequest, current: number) {
 }
 
 let pending: MemoryNetworkLayoutRequest | null = null;
+/** Accept whole requests or ordered graph chunks; begin cancels immediately and finish starts the assembled graph. */
 self.onmessage = (event: MessageEvent<MemoryNetworkLayoutWorkerRequest>) => {
   const data = event.data;
   if (!("kind" in data)) {

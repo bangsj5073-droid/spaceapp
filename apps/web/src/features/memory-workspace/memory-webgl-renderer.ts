@@ -27,6 +27,7 @@ export type MemoryRenderData = {
   nodeBuffer: Float32Array; edgeBuffer: Float32Array;
 };
 
+/** Convert taxonomy hex colors to normalized GPU channels, with the standard fallback. */
 function colorComponents(color: string): number[] {
   const hex = /^#[\da-f]{6}$/i.test(color) ? color.slice(1) : "7395ad";
   return [0, 2, 4].map(offset => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255);
@@ -70,6 +71,7 @@ function* prepareMemoryRenderSteps(nodes: MemoryGraphNode[], edges: MemoryGraphE
   return { nodes: prepared, byId, edges: links, adjacency, extent, labels: [...roots, ...sources, ...others].slice(0, LABEL_POOL_LIMIT), nodeBuffer, edgeBuffer };
 }
 
+/** Exhaust the shared preparation steps synchronously for small fixtures and pure tests. */
 export function prepareMemoryRenderData(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], positions: Map<string, MemoryAtlasPosition>, coordinates: Map<string, MemoryPoint3D>): MemoryRenderData {
   const steps = prepareMemoryRenderSteps(nodes, edges, positions, coordinates);
   let step = steps.next();
@@ -88,6 +90,7 @@ export async function prepareMemoryRenderDataAsync(nodes: MemoryGraphNode[], edg
   }
 }
 
+/** Cap Canvas work while retaining the focused node and prioritizing source anchors. */
 export function memoryFallbackNodes(data: MemoryRenderData, focus: string | null): RenderNode[] {
   if (data.nodes.length <= MEMORY_FALLBACK_NODE_LIMIT) return data.nodes;
   const entries = new Map<string, RenderNode>();
@@ -238,6 +241,7 @@ export class MemoryWebGLRenderer {
   private timerQuery: WebGLQuery | null = null;
   gpuMs: number | null = null;
 
+  /** Allocate shaders and instanced geometry; release partial allocations if setup fails. */
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     this.timer = gl.getExtension("EXT_disjoint_timer_query_webgl2") as TimerExtension | null;
@@ -264,16 +268,19 @@ export class MemoryWebGLRenderer {
     } catch (error) { this.dispose(); throw error; }
   }
 
+  /** Register allocated buffers so partial initialization can dispose them safely. */
   private createBuffer() {
     const buffer = this.gl.createBuffer();
     if (!buffer) throw new Error("Unable to allocate memory GPU buffer");
     this.buffers.push(buffer); return buffer;
   }
+  /** Register vertex arrays for the same ownership lifetime as this renderer. */
   private createVao() {
     const vao = this.gl.createVertexArray();
     if (!vao) throw new Error("Unable to allocate memory vertex array");
     this.vaos.push(vao); return vao;
   }
+  /** Create the unfiltered, clamped neighbor-membership lookup texture. */
   private createTexture() {
     const gl = this.gl, texture = gl.createTexture();
     if (!texture) throw new Error("Unable to allocate memory GPU texture");
@@ -282,6 +289,7 @@ export class MemoryWebGLRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     return texture;
   }
+  /** Link one shader pair, deleting intermediate shaders on both success and failure. */
   private createProgram(vertex: string, fragment: string): Program {
     const gl = this.gl, shaders: WebGLShader[] = [];
     const program = gl.createProgram();
@@ -300,6 +308,7 @@ export class MemoryWebGLRenderer {
     } catch (error) { gl.deleteProgram(program); throw error; }
     finally { for (const shader of shaders) gl.deleteShader(shader); }
   }
+  /** Cache active uniform locations while allowing uniforms optimized out by the driver. */
   private uniform(program: Program, name: string) {
     let location = program.uniforms.get(name);
     if (location === undefined) {
@@ -308,6 +317,7 @@ export class MemoryWebGLRenderer {
     }
     return location ?? null;
   }
+  /** Upload a prepared snapshot once and reset neighbor state for its node indices. */
   setData(data: MemoryRenderData) {
     const gl = this.gl;
     if (this.destroyed || gl.isContextLost()) return;
@@ -323,6 +333,7 @@ export class MemoryWebGLRenderer {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.neighborWidth, height, 0, gl.RED, gl.UNSIGNED_BYTE, this.neighborPixels);
     } finally { finishProfile(); }
   }
+  /** Change neighbor membership only when focus changes, without rebuilding geometry. */
   private setFocus(focus: string | null) {
     if (this.focus === focus) return;
     const data = this.data!, gl = this.gl;
@@ -332,6 +343,7 @@ export class MemoryWebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.neighbors);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.neighborWidth, this.neighborPixels.length / this.neighborWidth, gl.RED, gl.UNSIGNED_BYTE, this.neighborPixels);
   }
+  /** Bind camera and focus uniforms shared by node and edge draw calls. */
   private common(program: Program, camera: MemoryCamera3D, width: number, height: number, focus: string | null) {
     const gl = this.gl;
     gl.useProgram(program.program);
@@ -342,6 +354,7 @@ export class MemoryWebGLRenderer {
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.neighbors);
     gl.uniform1i(this.uniform(program, "u_neighbors"), 0); gl.uniform1i(this.uniform(program, "u_textureWidth"), this.neighborWidth);
   }
+  /** Submit one camera frame and read any completed GPU timer without waiting for the GPU. */
   render(camera: MemoryCamera3D, width: number, height: number, focus: string | null) {
     if (!this.data || this.destroyed || this.gl.isContextLost()) return;
     const gl = this.gl; this.setFocus(focus);
@@ -363,6 +376,7 @@ export class MemoryWebGLRenderer {
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.data.nodes.length); gl.bindVertexArray(null);
     if (timing) gl.endQuery(this.timer!.TIME_ELAPSED_EXT);
   }
+  /** Idempotently release GPU resources owned by this renderer, including timer queries. */
   dispose() {
     if (this.destroyed) return;
     this.destroyed = true;

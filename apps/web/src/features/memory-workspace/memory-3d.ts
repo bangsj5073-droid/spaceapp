@@ -4,7 +4,7 @@ export type MemoryPoint3D = { x: number; y: number; z: number };
 export type MemoryCamera3D = { yaw: number; pitch: number; zoom: number };
 export const DEFAULT_MEMORY_CAMERA: MemoryCamera3D = { yaw: 0.3, pitch: -0.15, zoom: 1 };
 
-// Avalanche each seed so the three axes are independent even for similar file IDs.
+/** Hash a node/axis seed into a stable unit interval without shared random state. */
 const unit = (seed: string) => {
   let hash = 2166136261;
   for (const character of seed) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
@@ -21,7 +21,7 @@ export type MemoryNetwork3DSimulation = {
   snapshot: () => Map<string, MemoryPoint3D>;
 };
 
-/** Independent XYZ force relaxation, with resumable iterations for the layout worker. */
+/** Create deterministic XYZ force relaxation with bounded advances and independent snapshot copies. */
 export function createMemoryNetwork3DSimulation(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): MemoryNetwork3DSimulation {
   const ordered = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
   const index = new Map(ordered.map((node, i) => [node.id, i]));
@@ -69,11 +69,13 @@ export function createMemoryNetwork3DSimulation(nodes: MemoryGraphNode[], edges:
   const sumX = new Float64Array(gridSize), sumY = new Float64Array(gridSize), sumZ = new Float64Array(gridSize);
   const next = new Int32Array(count);
   let step = 0;
+  /** Find this iteration's cell or an empty slot without clearing the reusable hash table. */
   const slotFor = (x: number, y: number, z: number, stamp: number) => {
     let slot = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) & mask;
     while (stamps[slot] === stamp && (cellX[slot] !== x || cellY[slot] !== y || cellZ[slot] !== z)) slot = (slot + 1) & mask;
     return slot;
   };
+  /** Apply one cooled spring/repulsion step while keeping the actual core node fixed. */
   const iterate = () => {
     fx.fill(0); fy.fill(0); fz.fill(0);
     const stamp = step + 1;
@@ -132,12 +134,16 @@ export function createMemoryNetwork3DSimulation(nodes: MemoryGraphNode[], edges:
     step++;
   };
   return {
+    /** Fraction of the fixed relaxation budget consumed; an empty graph is already complete. */
     get progress() { return count ? step / MEMORY_3D_LAYOUT_STEPS : 1; },
+    /** Whether further advances would leave the current coordinates unchanged. */
     get done() { return !count || step >= MEMORY_3D_LAYOUT_STEPS; },
+    /** Consume at most this many whole iterations, stopping at the shared layout budget. */
     advance(iterations = 1) {
       const end = Math.min(MEMORY_3D_LAYOUT_STEPS, step + Math.max(0, Math.floor(iterations)));
       while (count && step < end) iterate();
     },
+    /** Copy coordinates so later iterations cannot mutate an already published frame. */
     snapshot: () => new Map(ordered.map((node, i) => [node.id, { x: px[i]!, y: py[i]!, z: pz[i]! }]))
   };
 }
@@ -149,6 +155,7 @@ export function layoutMemoryNetwork3D(nodes: MemoryGraphNode[], edges: MemoryGra
   return simulation.snapshot();
 }
 
+/** Project rotated XYZ into CSS pixels, retaining depth and the near-plane clamp shared by GPU rendering and picking. */
 export function projectMemoryPoint(point: MemoryPoint3D, camera: MemoryCamera3D, scale: number, width: number, height: number) {
   const x = point.x * Math.cos(camera.yaw) + point.z * Math.sin(camera.yaw);
   const depth = -point.x * Math.sin(camera.yaw) + point.z * Math.cos(camera.yaw);

@@ -12,7 +12,10 @@ export type MemoryOverviewParseMessage =
   | { kind: "value"; value: unknown }
   | { kind: "error"; message: string };
 
-/** Runs only inside the parser worker; preserve the ordinary response reader's JSON/text semantics. */
+/**
+ * Decode response bytes inside a worker, then stream graph nodes/edges in bounded messages.
+ * Empty bodies remain null and malformed/non-graph bodies retain the ordinary reader's value semantics.
+ */
 export async function streamMemoryOverviewResponse(request: MemoryOverviewParseRequest, post: (message: MemoryOverviewParseMessage) => void): Promise<void> {
   const raw = new TextDecoder().decode(request.buffer);
   if (!raw) { post({ kind: "value", value: null }); return; }

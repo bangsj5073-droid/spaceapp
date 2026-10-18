@@ -9,6 +9,7 @@ type LongTask = { startTime: number; duration: number };
 type Frame = { nodes: number; edges: number; cpuMs: number; renderer: string };
 
 /** The production workspace and offline API, with observable local-only timing. */
+/** Observe the actual offline workspace pipeline, including layout convergence and long tasks. */
 function PipelineBenchmark() {
   const [runtime, setRuntime] = useState<SpaceRuntime | null>(null);
   const [version, setVersion] = useState(0);

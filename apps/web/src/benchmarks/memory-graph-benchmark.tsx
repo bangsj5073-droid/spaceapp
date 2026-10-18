@@ -11,9 +11,10 @@ type FrameSample = { cpuMs: number; renderer: string; nodes: number; edges: numb
 type PickSample = { durationMs?: number; latencyMs?: number };
 const yieldToBrowser = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 const percentile = (values: number[], fraction: number) => [...values].sort((a, b) => a - b)[Math.max(0, Math.ceil(values.length * fraction) - 1)] ?? null;
+/** Keep empty measurements explicit instead of reporting an apparent zero-duration sample. */
 function summary(values: number[]) { return { samples: values.length, p50: percentile(values, .5), p95: percentile(values, .95), max: values.length ? Math.max(...values) : null }; }
 
-/** Fixed coordinates isolate actual renderer costs from force-layout convergence. */
+/** Fixed coordinates and three edges per node isolate rendering from layout convergence. */
 async function fixture(count: number): Promise<Fixture> {
   const result: Fixture = { nodes: [], edges: [], positions: new Map(), coordinates: new Map() };
   for (let i = 0; i < count; i++) {
@@ -27,6 +28,7 @@ async function fixture(count: number): Promise<Fixture> {
   return result;
 }
 
+/** Mount the production renderer and collect visible-tab frame and picking measurements. */
 function Benchmark() {
   const [count, setCount] = useState(() => {
     const requested = Number(new URLSearchParams(location.search).get("nodes"));

@@ -1,6 +1,9 @@
 import type { MemoryOverviewEnvelope, MemoryOverviewParseMessage } from "./memory-overview-parser.js";
 
-/** Only the explicitly expanded, successful overview uses this worker. Fetch/auth/error handling stays in live-api. */
+/**
+ * Transfer successful expanded-overview bytes to a parser worker and assemble its bounded graph chunks.
+ * Other responses or unsupported workers use the existing reader; the worker is terminated on every exit.
+ */
 export async function readMemoryOverviewResponse(url: string, response: Response, fallback: () => Promise<unknown>): Promise<unknown> {
   const [path, query] = url.split("?");
   const expanded = path === "/api/admin/memory/graph/overview" && Number(new URLSearchParams(query).get("limit")) > 2000;

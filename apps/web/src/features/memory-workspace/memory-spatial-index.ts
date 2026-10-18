@@ -10,10 +10,12 @@ const axisValue = (node: RenderNode, axis: number) => axis === 0 ? node.point.x 
 export class MemorySpatialIndex {
   private order: Uint32Array;
   private branches: Branch[] = [];
+  /** Synchronous construction is for small inputs; use create for interactive large graphs. */
   constructor(private data: MemoryRenderData, deferBuild = false) {
     this.order = Uint32Array.from(data.nodes, item => item.index);
     if (!deferBuild) for (const step of this.build()) { void step; /* Synchronous pure helper for small graphs/tests. */ }
   }
+  /** Build in cooperative slices, returning null if its graph snapshot becomes obsolete. */
   static async create(data: MemoryRenderData, cancelled: () => boolean): Promise<MemorySpatialIndex | null> {
     if (cancelled()) return null;
     const index = new MemorySpatialIndex(data, true); let deadline = performance.now() + 6;
@@ -29,6 +31,7 @@ export class MemorySpatialIndex {
     }
     return cancelled() ? null : index;
   }
+  /** Partition indices around a median without sorting or blocking an entire large branch. */
   private *select(start: number, end: number, middle: number, axis: number): Generator<void> {
     // In-place quickselect avoids sorting/reallocating all nodes at every level.
     let lo = start, hi = end - 1, operations = 0;
@@ -47,6 +50,7 @@ export class MemorySpatialIndex {
       else break;
     }
   }
+  /** Yield within bounds scans and partitions, including the initial full-graph branch. */
   private *build(): Generator<void> {
     const tasks = this.order.length ? [{ start: 0, end: this.order.length, parent: -1, right: false }] : [];
     while (tasks.length) {
@@ -71,6 +75,7 @@ export class MemorySpatialIndex {
       yield;
     }
   }
+  /** Resolve CSS-pixel coordinates to the frontmost visible hit; counters support benchmarks. */
   pick(x: number, y: number, camera: MemoryCamera3D, width: number, height: number, focus: string | null) {
     const scale = Math.min(width, height) * 0.4 / this.data.extent;
     const cy = Math.cos(camera.yaw), sy = Math.sin(camera.yaw), cp = Math.cos(camera.pitch), sp = Math.sin(camera.pitch);

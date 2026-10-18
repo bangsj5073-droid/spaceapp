@@ -9,6 +9,7 @@ export type DemoMemoryGraph = {
   neighbors: Map<string, MemoryGraphEdge[]>;
 };
 
+/** Accept only the supported opt-in fixture sizes from demo URL parameters. */
 export function demoMemoryNodeCount(value: unknown): DemoMemoryNodeCount | undefined {
   const count = Number(value);
   return DEMO_MEMORY_NODE_COUNTS.find(candidate => candidate === count);
@@ -19,6 +20,7 @@ const yieldToBrowser = () => new Promise<void>(resolve => setTimeout(resolve, 0)
 const sourcePath = "/demo/memory/space_memory_2026-10.md";
 const themes = ["Product", "Engineering", "Research", "Design", "Operations", "Support", "Planning", "Delivery"];
 
+/** Generate deterministic synthetic relations in bounded batches without backend access. */
 export async function createLargeDemoMemoryGraph(count: DemoMemoryNodeCount): Promise<DemoMemoryGraph> {
   const nodes: MemoryGraphNode[] = [{ id: "source:synthetic", type: "SOURCE", label: "gemini.md", sourcePath, recordId: null }];
   for (let index = 0; index < themes.length; index++) {
@@ -70,6 +72,7 @@ export type LargeDemoMemoryQuery = {
   scope?: "SYSTEM" | "ROOM" | "PROJECT"; roomId?: string; lifecycleStatus?: "ACTIVE" | "ARCHIVED"; month?: string; relationMode?: "CLUSTERED" | "RELATIONS";
 };
 
+/** Apply offline query filters and node/edge caps while yielding during large scans. */
 export async function largeDemoMemoryOverview(graph: DemoMemoryGraph, query: LargeDemoMemoryQuery): Promise<{ data: MemoryGraphOverviewPayload }> {
   const limit = Math.min(50_000, Math.max(1, Math.floor(query.limit ?? 2000)));
   const needle = query.q?.trim().toLowerCase();
@@ -125,6 +128,7 @@ export async function largeDemoMemoryOverview(graph: DemoMemoryGraph, query: Lar
   } };
 }
 
+/** Return one fixture node with at most 500 incident relations, or null for unknown ids. */
 export function largeDemoMemoryDetail(graph: DemoMemoryGraph, id: string): MemoryGraphNodeDetail | null {
   const node = graph.byId.get(id);
   if (!node) return null;

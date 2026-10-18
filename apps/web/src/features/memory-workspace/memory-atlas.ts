@@ -5,14 +5,20 @@ import { isMemoryCoreLabel } from "./memory-graph-visuals.js";
 export const ATLAS_COLORS = ["#57ccff", "#ff79bc", "#ab95ff", "#53e2ba", "#ffc56c", "#fa887e", "#a0df73", "#8caaff"];
 export type MemoryAtlasPosition = { x: number; y: number; color: string; hub: boolean; groupId: string; monthLabel?: string };
 export type MemoryAtlasGroup = { id: string; label: string; color: string; count: number; kind: "tag" | "topic" | "month" | "archive" };
+/** Read a canonical YYYY-MM month from the real source path, returning null for undated sources. */
 export const memorySourceMonth = (node: MemoryGraphNode) => node.sourcePath?.match(/(?:^|[_/-])(20\d{2}-(?:0[1-9]|1[0-2]))(?:[_. /-]|$)/)?.[1] ?? null;
+/** Format an archive month in UTC so the user's timezone cannot shift its displayed month. */
 export const memoryMonthLabel = (month: string) => new Date(`${month}-01T00:00:00Z`).toLocaleDateString("en", { month: "short", year: "numeric", timeZone: "UTC" });
 
 export const MIN_ATLAS_TAG_COUNT = 10;
 
-/** Colors and labels describe real taxonomy or canonical source months; links are never invented. */
+/**
+ * Group real taxonomy/source months without inventing links. Disabling layout prepares metadata only;
+ * preserveAll retains rare topic nodes for the complete 3D view while the default 2D thresholds stay intact.
+ */
 export function createMemoryAtlas(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], computeLayout = true, minTagCount = MIN_ATLAS_TAG_COUNT, preserveAll = false) {
   const monthLabels = new Map<string, string>();
+  /** Format each distinct month once instead of invoking date formatting for every record. */
   const monthLabel = (month: string) => {
     let label = monthLabels.get(month);
     if (label === undefined) { label = memoryMonthLabel(month); monthLabels.set(month, label); }

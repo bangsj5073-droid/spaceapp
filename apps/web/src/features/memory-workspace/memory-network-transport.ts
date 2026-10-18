@@ -2,9 +2,13 @@ import type { MemoryNetworkLayoutRequest, MemoryNetworkLayoutWorkerRequest } fro
 
 const NODE_BATCH = 500;
 const EDGE_BATCH = 2000;
+/** Give browser input a turn between synchronous structured-clone batches. */
 const yieldToUI = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 
-/** Bound synchronous structured-clone work when sending a complete graph. */
+/**
+ * Send small graphs directly and large graphs in bounded node/edge chunks.
+ * An inactive request stops without finish; its caller owns terminating the abandoned worker.
+ */
 export async function postMemoryNetworkLayoutRequest(
   worker: { postMessage(message: MemoryNetworkLayoutWorkerRequest): void },
   request: MemoryNetworkLayoutRequest,

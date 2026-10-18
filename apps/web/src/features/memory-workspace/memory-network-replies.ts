@@ -9,6 +9,7 @@ export type MemoryNetworkViewState = {
   done: boolean; progress: number;
 };
 
+/** Allocate transferable XYZ triples in raw node order, rejecting incomplete coordinate maps. */
 export function packMemoryDepth(nodes: MemoryGraphNode[], points: Map<string, MemoryPoint3D>): Float32Array {
   const packed = new Float32Array(nodes.length * 3);
   nodes.forEach((node, index) => {
@@ -19,11 +20,16 @@ export function packMemoryDepth(nodes: MemoryGraphNode[], points: Map<string, Me
   return packed;
 }
 
+/**
+ * Allocate atlas columns in raw node order and encode repeated labels once.
+ * Month index zero means absent; present months use their dictionary index plus one.
+ */
 export function packMemoryAtlas(nodes: MemoryGraphNode[], positions: Map<string, MemoryAtlasPosition>): PackedMemoryAtlas {
   const packed: PackedMemoryAtlas = { xy: new Float32Array(nodes.length * 2), groupIndices: new Uint16Array(nodes.length),
     colorIndices: new Uint16Array(nodes.length), hubs: new Uint8Array(nodes.length), monthIndices: new Uint16Array(nodes.length),
     groupIds: [], colors: [], months: [] };
   const groups = new Map<string, number>(), colors = new Map<string, number>(), months = new Map<string, number>();
+  /** Reuse the first assigned dictionary index so every packed column shares stable string references. */
   const dictionaryIndex = (value: string, dictionary: Map<string, number>, values: string[]) => {
     let index = dictionary.get(value);
     if (index === undefined) { index = values.length; dictionary.set(value, index); values.push(value); }
@@ -48,6 +54,7 @@ export function memoryReplyTransferables(message: MemoryNetworkLayoutMessage): A
   return arrays.flatMap(array => array ? [array.buffer as ArrayBuffer] : []);
 }
 
+/** Validate and decode packed or legacy frames into fresh maps, yielding after bounded record batches. */
 function* applyReplySteps(
   nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], message: MemoryNetworkLayoutMessage, previous: MemoryNetworkViewState | null
 ): Generator<void, MemoryNetworkViewState | null> {
@@ -103,7 +110,10 @@ function* applyReplySteps(
   return { atlas, positions, depth, done: message.done, progress: message.progress };
 }
 
-/** Build fresh immutable view maps in short slices; cancellation leaves the displayed state intact. */
+/**
+ * Build immutable view maps in short slices, returning null before an initial atlas or on cancellation.
+ * The previous displayed state remains usable until a complete reply has been decoded.
+ */
 export async function applyMemoryNetworkReply(
   nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], message: MemoryNetworkLayoutMessage,
   previous: MemoryNetworkViewState | null, cancelled: () => boolean = () => false

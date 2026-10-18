@@ -14,6 +14,7 @@ type Props = {
 };
 type ScreenNode = { entry: RenderNode; x: number; y: number; z: number; radius: number; perspective: number };
 
+/** Own the interactive camera, cancellable snapshot preparation and WebGL/Canvas lifecycle. */
 export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles, selectedNodeId, onSelectNode, loading, resetToken }: Props) {
   const volumeRatio = useMemo(() => {
     const finishProfile = memoryProfilePhase("volume-ratio");
